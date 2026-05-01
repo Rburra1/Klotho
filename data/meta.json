@@ -1,0 +1,5 @@
+{
+  "vocab_size": 65,
+  "num_train_tokens": 1003854,
+  "num_val_tokens": 111540
+}
