@@ -1,6 +1,6 @@
 # Klotho
 
-A tiny GPT-style transformer, written from scratch in PyTorch and deployed as a serverless inference API on AWS.
+A tiny GPT-style transformer, written from scratch in PyTorch. Includes a complete serverless inference design for AWS Lambda + API Gateway, validated locally via the Lambda runtime emulator.
 
 > Named after Klotho (Κλωθώ), the Greek Fate who spins the thread of life — one fiber at a time, the way an autoregressive language model spins text one token at a time.
 
@@ -11,9 +11,9 @@ This repo is the full stack:
 - **`infra/`** — Terraform for the AWS deployment (Lambda, API Gateway, IAM, CloudWatch, budget alert)
 - **`scripts/`** — one-command deploy, local Docker test, full teardown
 
-Companion to [Strand](https://strand.rithvikburra.com), the chat surface this kind of model serves.
+The model is trained and runs locally. The serving layer is fully implemented and tested via the AWS Lambda Runtime Emulator (\`./scripts/local_test.sh\`); a single \`./scripts/deploy.sh\` provisions everything on AWS, but I haven't pushed to AWS in production for this version.
 
-## What's in the model
+Companion to [Strand](https://strand.rithvikburra.com), the chat surface this kind of model serves.
 
 10M-param decoder-only transformer, GPT-2 style. ~200 lines of model code in `model/model.py`. No Hugging Face, no third-party transformer abstractions — just the math.
 
