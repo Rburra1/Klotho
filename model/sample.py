@@ -16,8 +16,8 @@ from model import Klotho, KlothoConfig
 from tokenizer import CharTokenizer
 
 
-DATA_DIR = Path(__file__).parent / "data"
-CKPT_DIR = Path(__file__).parent / "out"
+DATA_DIR = Path(__file__).parent.parent / "data"
+CKPT_DIR = Path(__file__).parent.parent / "out"
 
 
 def get_device() -> torch.device:

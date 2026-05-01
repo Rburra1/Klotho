@@ -1,85 +1,171 @@
 # Klotho
 
-A tiny GPT-style transformer, written from scratch in PyTorch, trained on a single MacBook in a few hours.
+A tiny GPT-style transformer, written from scratch in PyTorch and deployed as a serverless inference API on AWS.
 
-Companion to [Strand](https://strand.rithvikburra.com). Where Strand is the cloud-API chat surface, Klotho is the from-scratch model: ~10 million parameters, character-level, no Hugging Face, no third-party model code. Just the math.
+> Named after Klotho (Κλωθώ), the Greek Fate who spins the thread of life — one fiber at a time, the way an autoregressive language model spins text one token at a time.
 
-> Named after Klotho (Κλωθώ), the Greek Fate who spins the thread of life - one fiber at a time, the way an autoregressive language model spins text one token at a time.
+This repo is the full stack:
 
-## Why
+- **`model/`** — the architecture, trained from scratch on Tiny Shakespeare in ~96 min on Apple Silicon
+- **`serving/`** — Lambda handler that loads the trained checkpoint and exposes it over HTTP
+- **`infra/`** — Terraform for the AWS deployment (Lambda, API Gateway, IAM, CloudWatch, budget alert)
+- **`scripts/`** — one-command deploy, local Docker test, full teardown
 
-To prove out the basics of training a real language model end to end without leaning on `transformers`, `accelerate`, or any other framework that hides what's actually happening. The model code in `model.py` is the actual code that runs - no inheritance hierarchies, no abstractions to follow into. About 200 lines.
+Companion to [Strand](https://strand.rithvikburra.com), the chat surface this kind of model serves.
 
-The 10M-param scale is intentional. It's small enough to train on an Apple Silicon laptop in a few hours via the MPS backend, and it's the smallest size where the architectural choices (multi-head attention, pre-norm residuals, weight tying, GELU, AdamW + cosine LR) start to matter for output quality. Output is recognizable Shakespeare-style prose at the character level - rhythmic, archaic, syntactically coherent over short spans, but obviously not coherent at the sentence level. That's the right benchmark for this size.
+## What's in the model
 
-## Architecture
-
-Decoder-only transformer, GPT-2 style:
+10M-param decoder-only transformer, GPT-2 style. ~200 lines of model code in `model/model.py`. No Hugging Face, no third-party transformer abstractions — just the math.
 
 - 6 layers, 6 attention heads per layer, 384 embedding dim
-- Pre-LayerNorm: norm before each sublayer, residual added after
-- Multi-head causal self-attention, causal mask applied to attention scores before softmax
-- 4× expansion feed-forward with GELU
+- Pre-LayerNorm transformer blocks
+- Multi-head causal self-attention with single fused QKV projection
+- 4× expansion FFN with GELU
 - Token + learned positional embeddings, summed at input
 - Weight tying between input embedding and output projection
-- Standard GPT-2 init: N(0, 0.02), residual projections scaled by 1/√(2L)
+- GPT-2 init: N(0, 0.02), residual projections scaled by 1/√(2L)
 
-Total params: ~10.7M.
+Trained 5,000 iterations on Tiny Shakespeare via Apple Silicon MPS. Best validation loss **1.49**. Output preserves speaker formatting, iambic cadence, archaic vocabulary, and cross-corpus character recall. Coherence is local (~5 words) — expected ceiling for this scale.
 
-## Training
+## What's in the deployment
+
+- **AWS Lambda** running a containerized PyTorch + Klotho checkpoint (~700 MB image)
+- **API Gateway HTTP API** with three routes (`/health`, `/generate`, `/history`)
+- **CloudWatch** with structured JSON logging and 7-day retention
+- **SQLite** inside the Lambda for inference history and per-day stats
+- **ECR** for hosting the container image, with a 5-image lifecycle policy
+- **IAM** scoped to `AWSLambdaBasicExecutionRole` only
+- **Terraform** for everything — no clicking around the AWS Console
+- **$1/month budget alert** as cost insurance
+
+Designed to stay in the AWS Free Tier indefinitely at portfolio scale. Expected monthly cost: $0.
+
+## API
+
+### `POST /generate`
 
 ```bash
+curl -X POST $API_URL/generate \
+  -H "Content-Type: application/json" \
+  -d '{"prompt":"ROMEO:","max_tokens":200,"temperature":0.8,"top_k":40}'
+```
+
+Response:
+
+```json
+{
+  "id": "uuid-v4",
+  "prompt": "ROMEO:",
+  "completion": "I would thy love leave to come to see thee...",
+  "tokens_out": 200,
+  "latency_ms": 2340,
+  "model": 10.73
+}
+```
+
+### `GET /history?limit=20`
+
+Returns recent inferences. Note: history is per-Lambda-container (`/tmp/athena.db`), not global. For real production, this would be backed by RDS or DynamoDB. Documented as a known limitation.
+
+### `GET /health`
+
+Returns model metadata and load status.
+
+## Quick start
+
+### Train the model
+
+```bash
+cd model
+python -m venv ../.venv
+source ../.venv/bin/activate
 pip install -r requirements.txt
-python prepare.py        # downloads Tiny Shakespeare, builds char vocab, writes train/val binary splits
-python train.py          # ~2-3 hours on M4 with MPS, saves best.pt to out/
+
+python prepare.py    # downloads Tiny Shakespeare, writes data/
+python train.py      # ~96 min on Apple M4, writes out/best.pt
 python sample.py "ROMEO:" --stream
 ```
 
-Training loop:
-- Batch size 64, context length 256
-- AdamW, lr 3e-4 → 3e-5 with linear warmup (200 steps) and cosine decay
-- Gradient clipping at 1.0, weight decay 0.1, no decay on biases or LayerNorm
-- 5000 iterations, eval every 250 steps on 50 batches
-- Checkpoints best validation loss to `out/best.pt`
-
-Expected validation loss on Tiny Shakespeare: ~1.45 nats/token. Below 1.5 is where the output starts looking like real Shakespeare excerpts.
-
-## Sampling
+### Test the deployment locally
 
 ```bash
-python sample.py "QUEEN:"
-python sample.py "JULIET:" --max-new-tokens 1000 --temperature 0.7 --top-k 40 --stream
+./scripts/local_test.sh
 ```
 
-`--stream` prints character by character as the model generates, which mirrors the streaming UI in Strand. `--temperature` controls randomness (0.8 is a good default; higher = wilder, lower = more deterministic). `--top-k` restricts each sampling step to the top K most-likely tokens.
+Spins up the Lambda runtime emulator in Docker on `localhost:9000` and exercises all three endpoints. Catches deployment issues before you push to ECR.
+
+### Deploy to AWS
+
+Read [docs/DEPLOY.md](docs/DEPLOY.md) end to end. Quick version:
+
+```bash
+./scripts/deploy.sh
+```
+
+This builds the container image, pushes to ECR, runs Terraform, and rolls the Lambda function. Idempotent — run any time.
+
+### Tear down
+
+```bash
+./scripts/destroy.sh
+```
+
+Removes all AWS resources. Returns billing to $0.
 
 ## File map
 
 ```
-model.py        Klotho + KlothoConfig: the transformer itself, ~200 lines
-tokenizer.py    Character-level tokenizer with save/load
-prepare.py      Download Tiny Shakespeare, encode, write train/val .bin
-train.py        Training loop with MPS/CUDA/CPU device selection
-sample.py       Load checkpoint and generate text
-data/           Created by prepare.py: input.txt, train.bin, val.bin, tokenizer.json, meta.json
-out/            Created by train.py: best.pt + periodic iter_*.pt checkpoints
+model/
+  model.py         Klotho architecture (~200 lines)
+  tokenizer.py     Char-level tokenizer with save/load
+  prepare.py       Download Tiny Shakespeare, encode, write train/val .bin
+  train.py         Training loop with MPS/CUDA/CPU device selection
+  sample.py        Load checkpoint and generate text
+  requirements.txt Training-time dependencies
+serving/
+  handler.py       Lambda handler: routes, generation, SQLite, structured logging
+  Dockerfile       Lambda container image (Python 3.11 + PyTorch CPU)
+infra/
+  main.tf          Full Terraform: ECR, IAM, Lambda, API Gateway, CloudWatch, budget
+  terraform.tfvars Region, project name, alert email
+scripts/
+  deploy.sh        Build + push + Terraform apply + roll Lambda
+  local_test.sh    Run the handler locally via Lambda runtime emulator
+  destroy.sh       Tear down everything with one command
+docs/
+  DEPLOY.md        Step-by-step AWS deploy walkthrough
+data/              [gitignored] Tokenized corpus (created by prepare.py)
+out/               [gitignored] Training checkpoints (created by train.py)
+SAMPLES.md         Generated samples from the trained model
 ```
 
-## Swapping in your own corpus
+## Engineering notes
 
-Replace `data/input.txt` with any text file (single corpus, ASCII or UTF-8), then re-run `prepare.py` and `train.py`. For corpora under ~1MB the model will overfit; aim for at least 5MB. For high-quality output on real text, switch to a BPE tokenizer (drop in `tiktoken` or train a `sentencepiece` model) and bump `vocab_size` accordingly. The model code is tokenizer-agnostic.
-
-## What this is not
-
-- A useful chatbot. 10M-param char-level models trained on 1MB of text don't carry meaning; they carry style. Feed it "ROMEO:" and you get plausible-looking iambic pentameter that doesn't mean anything.
-- A reference implementation. For that, see Karpathy's [nanoGPT](https://github.com/karpathy/nanoGPT) - this borrows the same architectural decisions but is rewritten cleanly for clarity.
-- A finetuned model. There is no instruction-tuning, no RLHF, no preference data. It's pure pretraining on next-character prediction.
+- **Cold start ≈ 8–15s.** PyTorch + 10MB checkpoint + container init. Acceptable for a portfolio API; for a real product use provisioned concurrency or pre-warm.
+- **Reserved concurrency = 5.** Caps simultaneous Lambda executions, which caps cost in pathological cases.
+- **API Gateway throttling** at 5 req/s sustained, 10 burst.
+- **`x86_64` Lambda, not Graviton.** PyTorch wheels ship for x86_64. Apple Silicon Macs cross-compile via `--platform linux/amd64` in the deploy script.
+- **No NAT Gateway, no VPC.** NAT is the most common surprise AWS bill. Lambda runs outside any VPC for this project.
+- **SQLite over RDS.** Free, real SQL, but per-container persistence. Real production would use RDS or DynamoDB.
 
 ## Roadmap
 
 - BPE tokenization for richer vocab
-- Train on a larger corpus (20-100MB, mixed sources)
-- Export to ONNX for browser inference via `onnxruntime-web`
-- Wire into Strand as a "local mode" toggle: same UI, on-device inference, no API calls
+- Train on a larger corpus (50–100MB, mixed sources)
+- Swap SQLite for RDS Postgres with Alembic migrations
+- ONNX export for browser inference (HIPAA-relevant: patient data never leaves client)
+- Streaming responses via API Gateway WebSocket
+- Custom domain with ACM certificate
 
-The browser-inference step is the interesting one - it would let Strand demo a path where patient or proprietary data never leaves the client. For HIPAA-bound contexts, that's the actual value proposition.
+## Cost
+
+| Resource | Cost | Free tier coverage |
+|----------|------|---------------------|
+| Lambda invocations | $0.20 / 1M requests | 1M/month free **forever** |
+| Lambda compute | $0.0000166667 / GB-second | 400K GB-seconds/month free **forever** |
+| API Gateway HTTP API | $1.00 / 1M requests | 1M/month free for 12 months |
+| CloudWatch Logs ingestion | $0.50 / GB | 5 GB/month free |
+| ECR storage | $0.10 / GB-month | 500 MB free for 12 months |
+| Budget alerts | Free | Unlimited |
+
+For a portfolio API receiving ~50 requests over a 4-week window: **$0.00**.

@@ -27,8 +27,9 @@ from tokenizer import CharTokenizer
 
 # ---------- config ----------
 
-DATA_DIR = Path(__file__).parent / "data"
-CKPT_DIR = Path(__file__).parent / "out"
+# data/ and out/ live at the repo root so the Lambda deploy script can find them.
+DATA_DIR = Path(__file__).parent.parent / "data"
+CKPT_DIR = Path(__file__).parent.parent / "out"
 CKPT_DIR.mkdir(parents=True, exist_ok=True)
 
 # Training hyperparameters

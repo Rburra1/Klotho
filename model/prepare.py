@@ -20,7 +20,8 @@ from tokenizer import CharTokenizer
 
 
 SHAKESPEARE_URL = "https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt"
-DATA_DIR = Path(__file__).parent / "data"
+# data/ lives at the repo root so the Lambda deploy script can find it.
+DATA_DIR = Path(__file__).parent.parent / "data"
 
 
 def download(url: str, dest: Path) -> None:
