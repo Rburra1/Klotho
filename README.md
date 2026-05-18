@@ -2,7 +2,7 @@
 
 A tiny GPT-style transformer, written from scratch in PyTorch. Includes a complete serverless inference design for AWS Lambda + API Gateway, validated locally via the Lambda runtime emulator.
 
-> Named after Klotho (Κλωθώ), the Greek Fate who spins the thread of life — one fiber at a time, the way an autoregressive language model spins text one token at a time.
+> Named after Klotho (Κλωθώ), the Greek Fate who spins the thread of life 
 
 This repo is the full stack:
 
